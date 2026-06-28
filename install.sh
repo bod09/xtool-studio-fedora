@@ -32,6 +32,17 @@ LAUNCHER="$BIN_DIR/${SLUG}.sh"
 DESKTOP_FILE="$HOME/.local/share/applications/${SLUG}.desktop"
 ICON_DIR="$HOME/.local/share/icons/hicolor/256x256/apps"
 ICON_PATH="$ICON_DIR/${SLUG}.png"
+ICON_FILE="${SLUG}.png"   # icon shipped in the repo, alongside this script
+ICON_URL="https://raw.githubusercontent.com/bod09/xtool-studio-fedora/main/${ICON_FILE}"
+
+# Directory this script lives in, used to find the bundled icon. Empty when the
+# script is piped straight into bash (curl | bash), in which case we download it.
+SCRIPT_SOURCE="${BASH_SOURCE[0]:-$0}"
+if [ -f "$SCRIPT_SOURCE" ]; then
+    SCRIPT_DIR="$(cd -- "$(dirname -- "$SCRIPT_SOURCE")" && pwd)"
+else
+    SCRIPT_DIR=""
+fi
 
 CONFIG_DIR="$HOME/.config/${SLUG}"
 CONFIG_FILE="$CONFIG_DIR/config"
@@ -313,11 +324,13 @@ configure_settings() {
 # ---------------------------------------------------------------------------
 ensure_deps() {
     say "Installing dependencies (you may be prompted for your password)..."
-    sudo dnf install -y wine winetricks 7zip icoutils ImageMagick \
+    # Only what is genuinely required: Wine to run it, winetricks for the win10
+    # prefix tweak, 7zip to unpack the installer. The icon ships in the repo, so
+    # no icoutils/ImageMagick image tooling is needed.
+    sudo dnf install -y wine winetricks 7zip \
         >/dev/null || die "Dependency install failed."
-    command -v wine     >/dev/null || die "wine not available after install."
-    command -v 7z       >/dev/null || die "7z not available after install."
-    command -v wrestool >/dev/null || die "wrestool (icoutils) not available after install."
+    command -v wine >/dev/null || die "wine not available after install."
+    command -v 7z   >/dev/null || die "7z not available after install."
 }
 
 # ---------------------------------------------------------------------------
@@ -372,29 +385,28 @@ extract_app() {
     mkdir -p "$dest"
     cp -rf "$WORK/app/." "$dest/"
 
-    extract_icon
     rm -rf "$WORK"
     WORK=""
 }
 
-# Pull the .ico out of the installer and convert the largest frame to PNG.
-extract_icon() {
-    say "Extracting icon..."
-    # The output dir must exist first: given a single icon resource, wrestool
-    # would otherwise write a plain file named "icons" instead of populating a
-    # directory, and the .ico would never be found.
-    mkdir -p "$ICON_DIR" "$WORK/icons"
-    if wrestool -x -t 14 -o "$WORK/icons" "$INSTALLER" >/dev/null 2>&1; then
-        local ico="" big=""
-        ico="$(find "$WORK/icons" -maxdepth 1 -iname '*.ico' 2>/dev/null | head -1)"
-        if [ -n "$ico" ] && magick "$ico" "$WORK/icons/out.png" >/dev/null 2>&1; then
-            # Pick the largest produced PNG (by file size).
-            big="$(find "$WORK/icons" -maxdepth 1 -iname 'out*.png' -printf '%s %p\n' 2>/dev/null \
-                | sort -rn | head -1 | cut -d' ' -f2-)"
-            [ -n "$big" ] && cp "$big" "$ICON_PATH"
+# Install the application icon. It ships in the repo as $ICON_FILE, so there is
+# no runtime image tooling: copy the bundled file when it sits next to this
+# script (git clone), otherwise download it from the repo (curl | bash).
+# Best-effort: a missing icon only means the menu entry uses a generic one.
+install_icon() {
+    say "Installing icon..."
+    mkdir -p "$ICON_DIR"
+    if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/$ICON_FILE" ]; then
+        if cp -f "$SCRIPT_DIR/$ICON_FILE" "$ICON_PATH"; then
+            return 0
         fi
     fi
-    [ -f "$ICON_PATH" ] || warn "Icon extraction failed; the launcher will use a generic icon."
+    if command -v curl >/dev/null 2>&1 \
+       && curl -fsSL "$ICON_URL" -o "$ICON_PATH" 2>/dev/null \
+       && [ -s "$ICON_PATH" ]; then
+        return 0
+    fi
+    warn "Could not place the app icon; the launcher will use a generic icon."
 }
 
 # ---------------------------------------------------------------------------
@@ -527,6 +539,7 @@ do_full_install() {
     build_prefix
     apply_dpi
     extract_app
+    install_icon
     write_launcher
     write_desktop
     refresh_caches

@@ -22,7 +22,7 @@ connected over Wi-Fi.
 Put the installer in `~/Downloads`, then run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<YOUR_USER>/<YOUR_REPO>/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/bod09/xtool-studio-fedora/main/install.sh | bash
 ```
 
 The script auto-detects the newest `xTool-Studio*.exe` in `~/Downloads`.
@@ -30,15 +30,15 @@ The script auto-detects the newest `xTool-Studio*.exe` in `~/Downloads`.
 To point it at a specific file instead:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<YOUR_USER>/<YOUR_REPO>/main/install.sh \
+curl -fsSL https://raw.githubusercontent.com/bod09/xtool-studio-fedora/main/install.sh \
   | bash -s -- /path/to/xTool-Studio-x64-1.7.30.exe
 ```
 
 Or clone and run locally:
 
 ```bash
-git clone https://github.com/<YOUR_USER>/<YOUR_REPO>.git
-cd <YOUR_REPO>
+git clone https://github.com/bod09/xtool-studio-fedora.git
+cd xtool-studio-fedora
 ./install.sh ~/Downloads/xTool-Studio-x64-1.7.30.exe
 ```
 

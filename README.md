@@ -94,10 +94,8 @@ DPI 163`, and lets you accept it or enter your own value. If detection genuinely
 fails, it falls back to a neutral **96** (100%, no scaling) and tells you to set
 it manually. No DPI value is ever assumed silently.
 
-### Power profile on launch
-
-`performance` (default), `balanced`, or `leave-alone`. The launcher applies your
-choice each time the app starts.
+The launcher does not change your system power profile. That is your own
+preference, so it is left exactly as you set it.
 
 ### Thread-sync accelerators (ntsync/fsync)
 

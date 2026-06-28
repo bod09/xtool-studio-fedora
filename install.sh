@@ -5,7 +5,7 @@
 # Interactive, re-runnable installer and configurator.
 #
 #   First run : installs everything (deps, Wine prefix, app, icon, launcher).
-#   Later runs: reconfigure GPU/DPI/power/sync, update the app, or uninstall,
+#   Later runs: reconfigure GPU/DPI/sync, update the app, or uninstall,
 #               WITHOUT rebuilding the prefix or re-extracting the app unless
 #               you explicitly ask for it.
 #
@@ -48,7 +48,6 @@ WORK=""
 # ---------------------------------------------------------------------------
 GPU_BACKEND="gl"          # gl | vulkan | disable-gpu
 DPI=""                    # blank => detect on first configure (never silently 163)
-POWER_PROFILE="performance"   # performance | balanced | leave-alone
 SYNC="auto"               # auto | on | off  (ntsync/fsync/esync)
 INSTALLER_PATH=""         # last installer used (remembered, informational)
 
@@ -105,7 +104,6 @@ save_config() {
 # xTool Studio installer settings - auto-generated, re-run install.sh to change.
 GPU_BACKEND="$GPU_BACKEND"
 DPI="$DPI"
-POWER_PROFILE="$POWER_PROFILE"
 SYNC="$SYNC"
 INSTALLER_PATH="$INSTALLER_PATH"
 EOF
@@ -225,20 +223,6 @@ choose_gpu() {
     case "$ans" in 1) echo gl ;; 2) echo vulkan ;; 3) echo disable-gpu ;; *) echo "$cur" ;; esac
 }
 
-choose_power() {
-    local cur="$1" def=1 ans=""
-    {
-        echo "Power profile to set on launch:"
-        echo "  1) performance (default)"
-        echo "  2) balanced"
-        echo "  3) leave-alone"
-    } >&2
-    case "$cur" in performance) def=1 ;; balanced) def=2 ;; leave-alone) def=3 ;; esac
-    read -r -p "Choose [1-3] ($def): " ans || true
-    ans="${ans:-$def}"
-    case "$ans" in 1) echo performance ;; 2) echo balanced ;; 3) echo leave-alone ;; *) echo "$cur" ;; esac
-}
-
 choose_sync() {
     local cur="$1" def=1 ans="" detected="off"
     [ -e /dev/ntsync ] && detected="on"
@@ -292,7 +276,7 @@ configure_dpi() {
 }
 
 # ---------------------------------------------------------------------------
-# Settings wizard (GPU, DPI, power, sync) - pre-filled from current values.
+# Settings wizard (GPU, DPI, sync) - pre-filled from current values.
 # ---------------------------------------------------------------------------
 configure_settings() {
     detect_gpu
@@ -310,7 +294,6 @@ configure_settings() {
 
     configure_dpi
 
-    POWER_PROFILE="$(choose_power "$POWER_PROFILE")"
     SYNC="$(choose_sync "$SYNC")"
 
     save_config
@@ -405,13 +388,14 @@ extract_icon() {
 # ---------------------------------------------------------------------------
 # Generate the launcher from the current settings.  [PROTECTED LOGIC INSIDE]
 # The Wine env vars and the stdout/stderr->file redirection (the EBADF fix)
-# are unchanged. Only the GPU flags, power line, and sync block are driven by
-# config, which is exactly what the configurator is for.
+# are unchanged. Only the GPU flags and sync block are driven by config, which
+# is exactly what the configurator is for. We deliberately do NOT touch the
+# system power profile: that is the user's own preference, not ours to change.
 # ---------------------------------------------------------------------------
 write_launcher() {
     mkdir -p "$BIN_DIR"
 
-    local gpu_flags sync_block power_line
+    local gpu_flags sync_block
     case "$GPU_BACKEND" in
         gl)          gpu_flags='--use-angle=gl --ignore-gpu-blocklist --enable-gpu-rasterization' ;;
         vulkan)      gpu_flags='--use-angle=vulkan --ignore-gpu-blocklist --enable-gpu-rasterization' ;;
@@ -426,13 +410,6 @@ write_launcher() {
         sync_block='# thread-sync accelerators disabled (no /dev/ntsync, or your choice)'
     fi
 
-    case "$POWER_PROFILE" in
-        performance) power_line='powerprofilesctl set performance 2>/dev/null || true' ;;
-        balanced)    power_line='powerprofilesctl set balanced 2>/dev/null || true' ;;
-        leave-alone) power_line='# power profile left unchanged' ;;
-        *)           power_line='powerprofilesctl set performance 2>/dev/null || true' ;;
-    esac
-
     say "Writing launcher: $LAUNCHER"
     cat > "$LAUNCHER" <<EOF
 #!/usr/bin/env bash
@@ -446,7 +423,6 @@ export WINEPREFIX="$PREFIX"
 export WINEARCH=win64
 $sync_block
 export WINEDEBUG=-all
-$power_line
 exec /usr/bin/wine "$APP_EXE" \\
     $gpu_flags \\
     >/tmp/${SLUG}-out.log 2>/tmp/${SLUG}-err.log
@@ -517,7 +493,7 @@ final_notes() {
     echo
     echo "  Notes:"
     echo "   - First run: set region/login, then connect the F2 over Wi-Fi."
-    echo "   - Re-run this script any time to reconfigure GPU/DPI/power without reinstalling."
+    echo "   - Re-run this script any time to reconfigure GPU/DPI/sync without reinstalling."
     echo "   - To uninstall, re-run and pick 'Uninstall'."
 }
 
@@ -600,7 +576,7 @@ show_menu() {
     echo
     say "xTool Studio on Fedora - installer and configurator"
     if [ -f "$CONFIG_FILE" ]; then
-        say "Saved settings: backend=$GPU_BACKEND dpi=${DPI:-unset} power=$POWER_PROFILE sync=$SYNC"
+        say "Saved settings: backend=$GPU_BACKEND dpi=${DPI:-unset} sync=$SYNC"
     else
         say "No saved settings yet (first run)."
     fi

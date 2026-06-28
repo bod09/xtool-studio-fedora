@@ -34,6 +34,7 @@ ICON_DIR="$HOME/.local/share/icons/hicolor/256x256/apps"
 ICON_PATH="$ICON_DIR/${SLUG}.png"
 ICON_FILE="${SLUG}.png"   # icon shipped in the repo, alongside this script
 ICON_URL="https://raw.githubusercontent.com/bod09/xtool-studio-fedora/main/${ICON_FILE}"
+SELF_URL="https://raw.githubusercontent.com/bod09/xtool-studio-fedora/main/install.sh"
 
 # Directory this script lives in, used to find the bundled icon. Empty when the
 # script is piped straight into bash (curl | bash), in which case we download it.
@@ -96,13 +97,26 @@ prompt_default() {
 [ "$(id -u)" -ne 0 ] || die "Run this as your normal user, not root (it uses sudo only where needed)."
 command -v dnf >/dev/null 2>&1 || die "This script targets Fedora (dnf not found)."
 
-# Make the menu work even under "curl ... | bash": in that case stdin is the
-# script itself, so reopen the controlling terminal for interactive reads.
-# Probe in a subshell first: in a truly headless context (no controlling
-# terminal) /dev/tty can pass a read test yet fail to open, and a failed
-# "exec <" would abort a non-interactive shell. The probe avoids that.
-if [ ! -t 0 ] && ( exec </dev/tty ) 2>/dev/null; then
-    exec </dev/tty
+# Make the interactive menu work when piped (e.g. "curl ... | bash"). In that
+# case bash reads THIS script from stdin, so the menu has no terminal to read
+# from - and grabbing the terminal mid-pipe makes curl fail ("Failure writing
+# output to destination"). So: drain the rest of the piped script (so the
+# download completes cleanly), then re-download ourselves and re-run with the
+# real terminal attached. Guarded against re-exec loops. The cleaner invocation
+# is  bash -c "$(curl -fsSL <url>)"  which keeps stdin on the terminal and skips
+# all of this; we still handle the plain pipe so it does not error.
+if [ ! -t 0 ] && [ -z "${XTOOL_REEXEC:-}" ]; then
+    cat >/dev/null 2>&1 || true   # let the piped script finish so curl exits cleanly
+    if command -v curl >/dev/null 2>&1 && ( : </dev/tty ) 2>/dev/null; then
+        _self="$(mktemp)" || die "mktemp failed."
+        if curl -fsSL "$SELF_URL" -o "$_self" 2>/dev/null && [ -s "$_self" ]; then
+            XTOOL_REEXEC=1 exec bash "$_self" "$@" </dev/tty
+        fi
+        rm -f "$_self"
+    fi
+    die "This installer is interactive and cannot run from a plain pipe.
+   Run it with:  bash -c \"\$(curl -fsSL $SELF_URL)\"
+   or clone the repo and run:  ./install.sh"
 fi
 
 # ---------------------------------------------------------------------------

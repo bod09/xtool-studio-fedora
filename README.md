@@ -20,11 +20,14 @@ connected over Wi-Fi.
 Put the installer in `~/Downloads`, then run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/bod09/xtool-studio-fedora/main/install.sh | bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/bod09/xtool-studio-fedora/main/install.sh)"
 ```
 
-The script is interactive and still works through `curl ... | bash`: it
-reattaches your terminal so the menu can read your answers.
+The installer is interactive (it shows a menu), so it is run with
+`bash -c "$(...)"` rather than `curl ... | bash`. The `bash -c` form keeps your
+terminal connected so the menu can read your answers; a plain `curl ... | bash`
+pipe cannot do that (the script would re-download itself to recover, or tell you
+to use the command above).
 
 Or clone and run it locally:
 

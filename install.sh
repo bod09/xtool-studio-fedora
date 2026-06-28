@@ -521,6 +521,10 @@ final_notes() {
     echo
     echo "  Notes:"
     echo "   - First run: set region/login, then connect the F2 over Wi-Fi."
+    echo "   - If the app asks to install RNDIS/CH340 drivers, tick 'No more"
+    echo "     reminders' and close them (they cannot install under Wine and"
+    echo "     reappear otherwise). For a USB cable connection, re-run and pick"
+    echo "     'Set up USB device connection'."
     echo "   - Re-run this script any time to reconfigure GPU/DPI/sync without reinstalling."
     echo "   - To uninstall, re-run and pick 'Uninstall'."
 }

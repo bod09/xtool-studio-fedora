@@ -110,6 +110,13 @@ preference, so it is left exactly as you set it.
    and Studio finds it over Wi-Fi, with no USB needed on Linux.
 3. Make sure your computer and the F2 are on the same network.
 
+On first launch the app may pop up **Install driver** boxes for RNDIS and CH340.
+You do not need to click Install. Tick **No more reminders** and close them. They
+will otherwise reappear on every launch: the CH340 driver cannot install under
+Wine (Linux provides it instead), so clicking Install does nothing. Dismissing
+them is harmless. If you want a USB cable connection, see Connecting over USB
+below.
+
 ## Connecting over USB
 
 Most people set the engraver up over Wi-Fi (see First run). If you do not have a

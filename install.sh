@@ -83,7 +83,10 @@ command -v dnf >/dev/null 2>&1 || die "This script targets Fedora (dnf not found
 
 # Make the menu work even under "curl ... | bash": in that case stdin is the
 # script itself, so reopen the controlling terminal for interactive reads.
-if [ ! -t 0 ] && [ -r /dev/tty ]; then
+# Probe in a subshell first: in a truly headless context (no controlling
+# terminal) /dev/tty can pass a read test yet fail to open, and a failed
+# "exec <" would abort a non-interactive shell. The probe avoids that.
+if [ ! -t 0 ] && ( exec </dev/tty ) 2>/dev/null; then
     exec </dev/tty
 fi
 
@@ -151,7 +154,13 @@ detect_scale() {
     case "${de,,}" in
         *kde*|*plasma*)
             if command -v kscreen-doctor >/dev/null 2>&1; then
-                s=$(kscreen-doctor -o 2>/dev/null | grep -iE 'scale' \
+                # Strip ANSI colour codes first: kscreen-doctor colourises its
+                # output, and the escape digits (e.g. "\e[01;33m") would
+                # otherwise be picked up as the scale value. Read the number
+                # after "Scale:" from the first (primary) output.
+                s=$(kscreen-doctor -o 2>/dev/null \
+                    | sed 's/\x1b\[[0-9;]*m//g' \
+                    | grep -iE 'Scale:' \
                     | grep -oE '[0-9]+(\.[0-9]+)?' | head -1 || true)
                 if [ -n "$s" ]; then
                     DETECTED_SCALE="$s"; DETECTED_METHOD="kscreen-doctor"; return
@@ -371,7 +380,10 @@ extract_app() {
 # Pull the .ico out of the installer and convert the largest frame to PNG.
 extract_icon() {
     say "Extracting icon..."
-    mkdir -p "$ICON_DIR"
+    # The output dir must exist first: given a single icon resource, wrestool
+    # would otherwise write a plain file named "icons" instead of populating a
+    # directory, and the .ico would never be found.
+    mkdir -p "$ICON_DIR" "$WORK/icons"
     if wrestool -x -t 14 -o "$WORK/icons" "$INSTALLER" >/dev/null 2>&1; then
         local ico="" big=""
         ico="$(find "$WORK/icons" -maxdepth 1 -iname '*.ico' 2>/dev/null | head -1)"

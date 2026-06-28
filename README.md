@@ -153,13 +153,15 @@ Chromium-based app through Wine on an integrated GPU. The defaults already use
 the fastest stable setup. For heavy design work, you may prefer to edit on a
 Windows machine and use the Fedora install to send jobs.
 
-## Duplicate titlebar on KDE
+## Window titlebar
 
-xTool Studio draws its own titlebar, but when maximised KWin can add a second
-one over the top. The installer adds a KWin window rule (forcing "no border" for
-the app) that removes the duplicate. It is applied automatically on KDE during a
-full install and when you choose **Reconfigure settings only**. If you ever see
-it again, fully close and relaunch the app.
+xTool Studio draws its own titlebar, so the installer tells Wine not to add a
+second one (the `Decorated=N` X11 setting in the prefix). This removes the
+duplicate titlebar the window manager would otherwise put on top when the window
+is maximised, and stops the app's own titlebar from being clipped off the top
+edge. It is applied automatically during a full install and when you choose
+**Reconfigure settings only**, and works on any desktop (KDE, GNOME, ...). If you
+ever see a stray bar, fully close and relaunch the app.
 
 ## Updating
 

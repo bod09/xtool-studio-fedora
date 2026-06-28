@@ -51,9 +51,6 @@ CONFIG_FILE="$CONFIG_DIR/config"
 UDEV_RULE="/etc/udev/rules.d/99-xtool-ch340.rules"
 USB_SYMLINK="xtool"   # stable /dev/xtool created by the udev rule
 
-# KWin rule id used to stop KDE drawing a second titlebar over the app's own.
-KWIN_RULE_ID="xtool-studio"
-
 APP_EXE="$PREFIX/$INSTALL_DIR/${APP_NAME}.exe"   # derived, same every run
 
 # Passed-in installer path (optional), and a scratch dir cleaned on exit.
@@ -368,61 +365,23 @@ apply_dpi() {
     WINEPREFIX="$PREFIX" WINEARCH=win64 WINEDEBUG=-all \
         wine reg add "HKCU\\Control Panel\\Desktop" /v LogPixels /t REG_DWORD /d "$DPI" /f \
         >/dev/null 2>&1 || warn "Could not set DPI; you can adjust it later."
-    WINEPREFIX="$PREFIX" wineserver -w 2>/dev/null || true
+    # Note: no "wineserver -w" here - it blocks until every wine process exits,
+    # which would hang a reconfigure run done while the app is open. The registry
+    # write persists on its own and is picked up at the next launch.
 }
 
-# KDE only. KWin re-adds a titlebar to this frameless app when it is maximised,
-# even though the app already asks for no decoration, so you get two title bars.
-# A KWin window rule that forces "no border" for the app's window class stops it.
-apply_titlebar_fix() {
-    case "${XDG_CURRENT_DESKTOP:-}" in
-        *KDE*|*kde*|*Plasma*|*plasma*) ;;
-        *) return 0 ;;   # not KDE: nothing to do
-    esac
-    command -v kwriteconfig6 >/dev/null 2>&1 || { warn "kwriteconfig6 not found; skipping titlebar fix."; return 0; }
-
-    # Register our rule id in [General] rules (without disturbing existing rules).
-    local cur
-    cur="$(kreadconfig6 --file kwinrulesrc --group General --key rules 2>/dev/null || true)"
-    case ",$cur," in
-        *",$KWIN_RULE_ID,"*) : ;;   # already present
-        *)
-            if [ -z "$cur" ]; then cur="$KWIN_RULE_ID"; else cur="$cur,$KWIN_RULE_ID"; fi
-            kwriteconfig6 --file kwinrulesrc --group General --key rules "$cur"
-            kwriteconfig6 --file kwinrulesrc --group General --key count \
-                "$(printf '%s' "$cur" | tr ',' '\n' | grep -c .)"
-            ;;
-    esac
-
-    # The rule: match this app by window class, force no border.
-    kwriteconfig6 --file kwinrulesrc --group "$KWIN_RULE_ID" --key Description "xTool Studio: no extra titlebar"
-    kwriteconfig6 --file kwinrulesrc --group "$KWIN_RULE_ID" --key wmclass "xtool studio.exe"
-    kwriteconfig6 --file kwinrulesrc --group "$KWIN_RULE_ID" --key wmclasscomplete --type bool false
-    kwriteconfig6 --file kwinrulesrc --group "$KWIN_RULE_ID" --key wmclassmatch 1
-    kwriteconfig6 --file kwinrulesrc --group "$KWIN_RULE_ID" --key noborder --type bool true
-    kwriteconfig6 --file kwinrulesrc --group "$KWIN_RULE_ID" --key noborderrule 2
-
-    # Ask KWin to reload its rules now.
-    gdbus call --session --dest org.kde.KWin --object-path /KWin \
-        --method org.kde.KWin.reconfigure >/dev/null 2>&1 || true
-    say "Applied KWin rule to remove the duplicate titlebar (relaunch the app to see it)."
-}
-
-# Undo the KWin titlebar rule (used by uninstall). Leaves any other rules alone.
-remove_titlebar_fix() {
-    command -v kwriteconfig6 >/dev/null 2>&1 || return 0
-    local cur new
-    cur="$(kreadconfig6 --file kwinrulesrc --group General --key rules 2>/dev/null || true)"
-    case ",$cur," in
-        *",$KWIN_RULE_ID,"*)
-            new="$(printf '%s' "$cur" | tr ',' '\n' | grep -vx "$KWIN_RULE_ID" | paste -sd, -)"
-            kwriteconfig6 --file kwinrulesrc --group General --key rules "$new"
-            kwriteconfig6 --file kwinrulesrc --group General --key count \
-                "$(printf '%s' "$new" | tr ',' '\n' | grep -c .)"
-            gdbus call --session --dest org.kde.KWin --object-path /KWin \
-                --method org.kde.KWin.reconfigure >/dev/null 2>&1 || true
-            ;;
-    esac
+# Stop the duplicate / clipped titlebar. The app draws its own titlebar, so we
+# tell Wine that no window is WM-decorated (the Decorated=N X11 setting). That
+# removes the second bar the window manager adds on maximise AND makes Wine
+# compute the maximised geometry correctly, so the app's own titlebar is not
+# clipped. Desktop-agnostic (KDE, GNOME, ...). Persists in the prefix registry;
+# needs the app relaunched to take effect.
+apply_window_fix() {
+    [ -f "$PREFIX/system.reg" ] || return 0
+    say "Applying titlebar fix (Wine Decorated=N) ..."
+    WINEPREFIX="$PREFIX" WINEARCH=win64 WINEDEBUG=-all \
+        wine reg add "HKCU\\Software\\Wine\\X11 Driver" /v Decorated /t REG_SZ /d N /f \
+        >/dev/null 2>&1 || warn "Could not set window decoration mode."
 }
 
 # ---------------------------------------------------------------------------
@@ -605,9 +564,9 @@ do_full_install() {
     apply_dpi
     extract_app
     install_icon
+    apply_window_fix
     write_launcher
     write_desktop
-    apply_titlebar_fix
     refresh_caches
     save_config
     final_notes
@@ -624,7 +583,7 @@ do_reconfigure() {
     write_launcher
     write_desktop
     apply_dpi          # cheap registry tweak; only runs if the prefix exists
-    apply_titlebar_fix
+    apply_window_fix
     refresh_caches
     say "Settings reapplied."
     offer_relaunch
@@ -761,7 +720,6 @@ do_uninstall() {
     ans="$(prompt_default "Type 'yes' to confirm" "no")"
     [ "$ans" = "yes" ] || { say "Aborted."; return; }
     rm -rf "$SHARE_DIR" "$LAUNCHER" "$DESKTOP_FILE" "$ICON_PATH"
-    remove_titlebar_fix
     local rc
     rc="$(prompt_default "Also remove saved settings ($CONFIG_FILE)? (yes/no)" "no")"
     [ "$rc" = "yes" ] && rm -f "$CONFIG_FILE"

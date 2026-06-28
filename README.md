@@ -110,6 +110,35 @@ preference, so it is left exactly as you set it.
    and Studio finds it over Wi-Fi, with no USB needed on Linux.
 3. Make sure your computer and the F2 are on the same network.
 
+## Connecting over USB
+
+Most people set the engraver up over Wi-Fi (see First run). If you do not have a
+second computer to do the Wi-Fi onboarding, you can connect over a USB cable
+instead.
+
+On first launch the app may offer to install two drivers, RNDIS and CH340:
+
+* RNDIS is USB networking. The Linux kernel handles it automatically, so the
+  USB connection uses the same network path as Wi-Fi with no setup needed.
+* CH340 is a USB-to-serial adapter. The driver the app offers to install does
+  nothing under Wine (there is no Windows driver model to install into, which is
+  why its box never clears). On Linux the kernel is the driver, so just tick
+  "No more reminders" on that box and close it.
+
+To prepare the serial connection on Linux, run the script and choose
+**Set up USB device connection (CH340 serial)**. It:
+
+* checks the `ch341` kernel module is present,
+* detects and offers to disable `brltty` if it is claiming CH340 devices (a
+  common cause of the port disappearing on some distros),
+* adds you to the `dialout` group so you can access the port (log out and back
+  in afterwards),
+* installs a udev rule that gives the adapter a stable `/dev/xtool` name with
+  the right permissions and keeps ModemManager away from it,
+* maps Wine `COM1` to that device.
+
+Then plug the engraver in over USB and it should be available in xTool Studio.
+
 ## Performance
 
 The editor works but can feel a little sluggish. This is the cost of running a

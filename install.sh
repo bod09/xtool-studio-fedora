@@ -5,9 +5,9 @@
 # Interactive, re-runnable installer and configurator.
 #
 #   First run : installs everything (deps, Wine prefix, app, icon, launcher).
-#   Later runs: reconfigure GPU/DPI/sync, update the app, or uninstall,
-#               WITHOUT rebuilding the prefix or re-extracting the app unless
-#               you explicitly ask for it.
+#   Later runs: reconfigure GPU/DPI/sync, update the app, set up USB, or
+#               uninstall, WITHOUT rebuilding the prefix or re-extracting the
+#               app unless you explicitly ask for it.
 #
 # Usage:
 #   ./install.sh [/path/to/xTool-Studio-x64-VERSION.exe]
@@ -46,6 +46,10 @@ fi
 
 CONFIG_DIR="$HOME/.config/${SLUG}"
 CONFIG_FILE="$CONFIG_DIR/config"
+
+# USB serial (CH340) setup
+UDEV_RULE="/etc/udev/rules.d/99-xtool-ch340.rules"
+USB_SYMLINK="xtool"   # stable /dev/xtool created by the udev rule
 
 APP_EXE="$PREFIX/$INSTALL_DIR/${APP_NAME}.exe"   # derived, same every run
 
@@ -581,6 +585,113 @@ do_update() {
     say "App updated. Your settings were kept."
 }
 
+# ---------------------------------------------------------------------------
+# USB device connection (CH340 serial).
+#
+# The CH340 "driver" xTool Studio offers to install is a no-op under Wine -
+# there is no Windows driver model to install into, which is why its box never
+# clears. On Linux the kernel IS the driver: the ch341 module exposes the
+# adapter as /dev/ttyUSB0. So we set up the Linux side (permissions, a stable
+# name, and ModemManager/brltty kept out of the way) and point a Wine COM port
+# at it. Needs sudo; to fully verify, the device must be plugged in over USB.
+#
+# (USB networking via RNDIS is handled automatically by the Linux kernel, so it
+# needs no setup here - the same network path your Wi-Fi connection already uses.)
+# ---------------------------------------------------------------------------
+do_usb_setup() {
+    local user="${USER:-$(id -un)}"
+    say "USB device connection setup (CH340 serial)."
+    {
+        echo
+        echo "  The CH340 'driver' the app installs does nothing under Wine."
+        echo "  Linux's own ch341 module is the driver; we configure the Linux"
+        echo "  side and map a Wine COM port to it. In the app you can then tick"
+        echo "  'No more reminders' on the CH340 box."
+        echo
+    } >&2
+
+    # 1) kernel module (the actual driver)
+    if modinfo -F filename ch341 >/dev/null 2>&1; then
+        say "ch341 module: available (auto-loads when the device is plugged in)."
+    else
+        warn "ch341 module not found - USB serial may not work on this kernel."
+    fi
+
+    # 2) brltty grabs CH340 (vendor 1a86) on many distros, after which the port
+    #    vanishes. Only act if a brltty rule actually claims it.
+    local brl="" f=""
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        if grep -qE '1a86|7523' "$f" 2>/dev/null; then brl="$f"; break; fi
+    done < <(find /usr/lib/udev/rules.d /etc/udev/rules.d -iname '*brltty*' 2>/dev/null)
+    if [ -n "$brl" ]; then
+        warn "brltty claims CH340 devices via: $brl"
+        local a
+        a="$(prompt_default "Disable it (recommended unless you use a braille display)? (yes/no)" "yes")"
+        if [ "$a" = "yes" ]; then
+            # A same-named file under /etc overrides the one in /usr/lib;
+            # linking it to /dev/null makes it empty.
+            if sudo ln -sf /dev/null "/etc/udev/rules.d/$(basename "$brl")"; then
+                say "Neutralised brltty's CH340 rule."
+            else
+                warn "Could not override the brltty rule."
+            fi
+        fi
+    else
+        say "brltty: no CH340-claiming rule (good)."
+    fi
+
+    # 3) dialout membership (needed to open /dev/ttyUSB*)
+    if id -nG "$user" | tr ' ' '\n' | grep -qx dialout; then
+        say "dialout group: already a member."
+    else
+        say "Adding $user to the 'dialout' group..."
+        if sudo usermod -aG dialout "$user"; then
+            warn "Added - you must log out and back in for it to take effect."
+        else
+            warn "Could not add you to the dialout group."
+        fi
+    fi
+
+    # 4) udev rule: stable /dev/xtool name, group access, ModemManager kept away
+    say "Installing udev rule: $UDEV_RULE"
+    if ! sudo tee "$UDEV_RULE" >/dev/null <<EOF
+# xTool engraver CH340/CH341/CH9102 USB-serial adapter.
+# Stable /dev/${USB_SYMLINK} symlink, group access, and tell ModemManager to
+# leave it alone so the app can open the port.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", SYMLINK+="${USB_SYMLINK}", MODE="0660", GROUP="dialout", ENV{ID_MM_DEVICE_IGNORE}="1"
+EOF
+    then
+        warn "Could not write the udev rule (needs sudo)."
+    else
+        sudo udevadm control --reload-rules 2>/dev/null || true
+        sudo udevadm trigger --subsystem-match=tty 2>/dev/null || true
+    fi
+
+    # 5) Wine COM1 -> the stable device symlink
+    mkdir -p "$PREFIX/dosdevices"
+    ln -sfn "/dev/${USB_SYMLINK}" "$PREFIX/dosdevices/com1"
+    say "Mapped Wine COM1 -> /dev/${USB_SYMLINK}"
+
+    # 6) live status
+    if command -v lsusb >/dev/null 2>&1 && lsusb 2>/dev/null | grep -qiE '1a86'; then
+        say "CH340 device detected now:"
+        ls -l /dev/ttyUSB* "/dev/${USB_SYMLINK}" 2>/dev/null || true
+    else
+        say "No CH340 device plugged in right now - connect the engraver to test."
+    fi
+
+    {
+        echo
+        echo "  Next:"
+        echo "   1. Plug the engraver in over USB (if you were just added to"
+        echo "      'dialout', log out and back in first)."
+        echo "   2. In xTool Studio tick 'No more reminders' on the CH340 box."
+        echo "   3. The device should be available over USB. If not, replug once."
+        echo
+    } >&2
+}
+
 do_uninstall() {
     say "Uninstall: removes the app, prefix, launcher, desktop entry and icon."
     local ans
@@ -590,6 +701,14 @@ do_uninstall() {
     local rc
     rc="$(prompt_default "Also remove saved settings ($CONFIG_FILE)? (yes/no)" "no")"
     [ "$rc" = "yes" ] && rm -f "$CONFIG_FILE"
+    if [ -e "$UDEV_RULE" ]; then
+        local ru
+        ru="$(prompt_default "Also remove the USB udev rule ($UDEV_RULE, needs sudo)? (yes/no)" "no")"
+        if [ "$ru" = "yes" ]; then
+            sudo rm -f "$UDEV_RULE" || true
+            sudo udevadm control --reload-rules 2>/dev/null || true
+        fi
+    fi
     refresh_caches
     say "Uninstalled."
 }
@@ -613,15 +732,17 @@ show_menu() {
         "Full install / repair" \
         "Reconfigure settings only" \
         "Update app (re-extract from newer installer)" \
+        "Set up USB device connection (CH340 serial)" \
         "Uninstall" \
         "Quit"; do
         case "$opt" in
             "Full install / repair")                        do_full_install; break ;;
             "Reconfigure settings only")                    do_reconfigure;  break ;;
             "Update app (re-extract from newer installer)")  do_update;       break ;;
+            "Set up USB device connection (CH340 serial)")   do_usb_setup;    break ;;
             "Uninstall")                                    do_uninstall;    break ;;
             "Quit")                                         say "Bye.";      break ;;
-            *)                                              warn "Invalid choice; enter a number 1-5." ;;
+            *)                                              warn "Invalid choice; enter a number 1-6." ;;
         esac
     done
 }

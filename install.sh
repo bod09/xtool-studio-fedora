@@ -51,9 +51,6 @@ CONFIG_FILE="$CONFIG_DIR/config"
 UDEV_RULE="/etc/udev/rules.d/99-xtool-ch340.rules"
 USB_SYMLINK="xtool"   # stable /dev/xtool created by the udev rule
 
-# KWin rule id (KDE) that makes the window fill the screen without maximising.
-KWIN_RULE_ID="xtool-studio"
-
 APP_EXE="$PREFIX/$INSTALL_DIR/${APP_NAME}.exe"   # derived, same every run
 
 # Passed-in installer path (optional), and a scratch dir cleaned on exit.
@@ -373,101 +370,20 @@ apply_dpi() {
     # write persists on its own and is picked up at the next launch.
 }
 
-# Titlebar fixes. Two layers:
-#  1) Desktop-agnostic: tell Wine no window is WM-decorated (Decorated=N), so the
-#     app's own titlebar is used and no second bar is added.
-#  2) KDE extra: even so, the app's *maximised* state shows a few-pixel white
-#     border (its own maximise padding) because Wine sits the window exactly on
-#     the work area instead of overhanging the screen like Windows. A KWin rule
-#     makes the main window fill the work area as a NORMAL (non-maximised) window,
-#     which has no such padding - so no border, no clip, one titlebar.
-# Persists in the prefix/KWin config; needs the app relaunched to take effect.
+# Stop the duplicate / clipped titlebar. The app draws its own titlebar, so we
+# tell Wine that no window is WM-decorated (the Decorated=N X11 setting). That
+# removes the second bar the window manager adds on maximise AND makes Wine
+# compute the maximised geometry correctly, so the app's titlebar is not clipped.
+# Desktop-agnostic; persists in the prefix registry; needs the app relaunched.
+# A thin white border can still appear when the window is maximised (the app's
+# own maximise padding). It is cosmetic and left as-is - earlier attempts to
+# remove it via a KWin rule caused worse problems (pinned/buggy resizing).
 apply_window_fix() {
     [ -f "$PREFIX/system.reg" ] || return 0
     say "Applying titlebar fix (Wine Decorated=N) ..."
     WINEPREFIX="$PREFIX" WINEARCH=win64 WINEDEBUG=-all \
         wine reg add "HKCU\\Software\\Wine\\X11 Driver" /v Decorated /t REG_SZ /d N /f \
         >/dev/null 2>&1 || warn "Could not set window decoration mode."
-    apply_kwin_fill_rule
-}
-
-# KDE only. Add a KWin rule so the main xTool window OPENS filling the work area
-# as a normal, non-maximised, borderless window, and stays that way unless you
-# resize it. Maximising is what paints the app's ~5px white maximise-padding
-# border, so the rule blocks the maximised state; filling the screen on open
-# gives the same look without it. Size/position use "apply initially" (not force)
-# so the window remains freely resizable and movable - it is not pinned.
-# The rule is scoped to Normal windows so dialogs (file pickers) are untouched.
-# Fill size is the work area in *logical* pixels (KWin rules use logical units),
-# i.e. physical work area / display scale.
-apply_kwin_fill_rule() {
-    case "${XDG_CURRENT_DESKTOP:-}" in *KDE*|*kde*|*Plasma*|*plasma*) ;; *) return 0 ;; esac
-    command -v kwriteconfig6 >/dev/null 2>&1 || return 0
-    command -v xprop >/dev/null 2>&1 || { warn "xprop not found; skipping the KDE fill rule (a thin border may show when maximised)."; return 0; }
-
-    # Work area (physical px) from _NET_WORKAREA = x y w h (first desktop).
-    local nums w h scale lw lh
-    nums="$(xprop -root _NET_WORKAREA 2>/dev/null | grep -oE '[0-9]+' | tr '\n' ' ')"
-    w="$(printf '%s' "$nums" | awk '{print $3}')"
-    h="$(printf '%s' "$nums" | awk '{print $4}')"
-    if ! [[ "$w" =~ ^[0-9]+$ ]] || ! [[ "$h" =~ ^[0-9]+$ ]] || [ "$w" -lt 100 ]; then
-        warn "Could not read the work area; skipping the KDE fill rule (a thin border may show when maximised)."
-        return 0
-    fi
-    detect_scale
-    scale="${DETECTED_SCALE:-1}"
-    lw="$(awk -v v="$w" -v s="$scale" 'BEGIN{printf "%.0f", v/s}')"
-    lh="$(awk -v v="$h" -v s="$scale" 'BEGIN{printf "%.0f", v/s}')"
-
-    local F=kwinrulesrc g="$KWIN_RULE_ID" cur
-    cur="$(kreadconfig6 --file "$F" --group General --key rules 2>/dev/null || true)"
-    case ",$cur," in
-        *",$g,"*) : ;;
-        *)
-            if [ -z "$cur" ]; then cur="$g"; else cur="$cur,$g"; fi
-            kwriteconfig6 --file "$F" --group General --key rules "$cur"
-            kwriteconfig6 --file "$F" --group General --key count \
-                "$(printf '%s' "$cur" | tr ',' '\n' | grep -c .)"
-            ;;
-    esac
-    kwriteconfig6 --file "$F" --group "$g" --key Description "xTool Studio: fill screen, no maximise border"
-    kwriteconfig6 --file "$F" --group "$g" --key wmclass "xtool studio.exe"
-    kwriteconfig6 --file "$F" --group "$g" --key wmclasscomplete --type bool false
-    kwriteconfig6 --file "$F" --group "$g" --key wmclassmatch 1
-    kwriteconfig6 --file "$F" --group "$g" --key types 1
-    kwriteconfig6 --file "$F" --group "$g" --key noborder --type bool true
-    kwriteconfig6 --file "$F" --group "$g" --key noborderrule 2
-    kwriteconfig6 --file "$F" --group "$g" --key maximizehoriz --type bool false
-    kwriteconfig6 --file "$F" --group "$g" --key maximizehorizrule 2
-    kwriteconfig6 --file "$F" --group "$g" --key maximizevert --type bool false
-    kwriteconfig6 --file "$F" --group "$g" --key maximizevertrule 2
-    # position/size use rule 3 (apply initially) so the window opens filled but
-    # stays resizable and movable; maximise stays force-blocked (rule 2) so the
-    # white maximise border never appears.
-    kwriteconfig6 --file "$F" --group "$g" --key position "0,0"
-    kwriteconfig6 --file "$F" --group "$g" --key positionrule 3
-    kwriteconfig6 --file "$F" --group "$g" --key size "${lw},${lh}"
-    kwriteconfig6 --file "$F" --group "$g" --key sizerule 3
-    gdbus call --session --dest org.kde.KWin --object-path /KWin \
-        --method org.kde.KWin.reconfigure >/dev/null 2>&1 || true
-    say "Applied KDE window rule: fills the screen, no maximise border."
-}
-
-# Remove the KWin fill rule (used by uninstall). Leaves any other rules alone.
-remove_kwin_fill_rule() {
-    command -v kwriteconfig6 >/dev/null 2>&1 || return 0
-    local cur new
-    cur="$(kreadconfig6 --file kwinrulesrc --group General --key rules 2>/dev/null || true)"
-    case ",$cur," in
-        *",$KWIN_RULE_ID,"*)
-            new="$(printf '%s' "$cur" | tr ',' '\n' | grep -vx "$KWIN_RULE_ID" | paste -sd, -)"
-            kwriteconfig6 --file kwinrulesrc --group General --key rules "$new"
-            kwriteconfig6 --file kwinrulesrc --group General --key count \
-                "$(printf '%s' "$new" | tr ',' '\n' | grep -c .)"
-            gdbus call --session --dest org.kde.KWin --object-path /KWin \
-                --method org.kde.KWin.reconfigure >/dev/null 2>&1 || true
-            ;;
-    esac
 }
 
 # ---------------------------------------------------------------------------
@@ -806,7 +722,6 @@ do_uninstall() {
     ans="$(prompt_default "Type 'yes' to confirm" "no")"
     [ "$ans" = "yes" ] || { say "Aborted."; return; }
     rm -rf "$SHARE_DIR" "$LAUNCHER" "$DESKTOP_FILE" "$ICON_PATH"
-    remove_kwin_fill_rule
     local rc
     rc="$(prompt_default "Also remove saved settings ($CONFIG_FILE)? (yes/no)" "no")"
     [ "$rc" = "yes" ] && rm -f "$CONFIG_FILE"

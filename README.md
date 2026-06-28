@@ -155,22 +155,16 @@ Windows machine and use the Fedora install to send jobs.
 
 ## Window titlebar
 
-xTool Studio draws its own titlebar, which doesn't play perfectly with maximising
-under Wine. The installer applies two fixes automatically (during a full install
-and when you choose **Reconfigure settings only**):
+xTool Studio draws its own titlebar. The installer sets `Decorated=N` in the Wine
+prefix so the window manager never adds a second titlebar over the app's own,
+and so the app's titlebar is not clipped when maximised. This is applied
+automatically during a full install and when you choose **Reconfigure settings
+only**, and works on any desktop. If you ever see a stray bar, fully close and
+relaunch the app.
 
-* `Decorated=N` in the Wine prefix, so the window manager never adds a second
-  titlebar over the app's own. This works on any desktop.
-* On **KDE**, a KWin rule that makes the main window open filling the work area
-  as a normal (non-maximised) window. The app's maximised state otherwise shows a
-  few-pixel white border (its own maximise padding), so the rule blocks
-  maximising and fills the screen on open instead. The window stays freely
-  resizable and movable (it is not pinned); only maximising is disabled. The rule
-  is scoped to the main window, so dialogs are unaffected. To remove it, re-run
-  and choose **Uninstall**, or delete the `xtool-studio` rule in System Settings,
-  Window Management, Window Rules.
-
-If you ever see a stray bar or border, fully close and relaunch the app.
+When the window is maximised you may notice a thin white border around it (the
+app's own maximise padding). It is purely cosmetic and left alone; if it bothers
+you, run the window at a large size instead of maximised.
 
 ## Updating
 

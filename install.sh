@@ -1,33 +1,62 @@
 #!/usr/bin/env bash
 #
-# xTool Studio on Fedora (via Wine, no Bottles)
-# ------------------------------------------------
-# Builds a clean Wine prefix, extracts xTool Studio straight from its
-# installer (bypassing the broken Electron installer), and creates a
-# one-click launcher with all the working performance/rendering flags.
+# xTool Studio on Fedora (via Wine, no extra frameworks)
+# ------------------------------------------------------
+# Interactive, re-runnable installer and configurator.
+#
+#   First run : installs everything (deps, Wine prefix, app, icon, launcher).
+#   Later runs: reconfigure GPU/DPI/power/sync, update the app, or uninstall,
+#               WITHOUT rebuilding the prefix or re-extracting the app unless
+#               you explicitly ask for it.
 #
 # Usage:
 #   ./install.sh [/path/to/xTool-Studio-x64-VERSION.exe]
 #
-# If no path is given, the script looks for an installer in ~/Downloads.
+# A menu is shown on every run. Your choices are saved to
+#   ~/.config/xtool-studio/config
+# and pre-filled the next time you run the script.
 #
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# Config - tweak these if you like
+# Constants (not user-tunable; these are layout/paths, not preferences)
 # ---------------------------------------------------------------------------
 APP_NAME="xTool Studio"
 SLUG="xtool-studio"
-PREFIX="$HOME/.local/share/${SLUG}/wineprefix"   # dedicated Wine prefix
+SHARE_DIR="$HOME/.local/share/${SLUG}"
+PREFIX="$SHARE_DIR/wineprefix"                   # dedicated Wine prefix
 INSTALL_DIR="drive_c/Program Files/${APP_NAME}"  # path inside the prefix
-DPI=163                                           # 96 x desktop-scale; 163 = 170%
-ANGLE_BACKEND="gl"                                # gl = clean+accelerated (vulkan glitches)
 
 BIN_DIR="$HOME/.local/bin"
 LAUNCHER="$BIN_DIR/${SLUG}.sh"
 DESKTOP_FILE="$HOME/.local/share/applications/${SLUG}.desktop"
 ICON_DIR="$HOME/.local/share/icons/hicolor/256x256/apps"
 ICON_PATH="$ICON_DIR/${SLUG}.png"
+
+CONFIG_DIR="$HOME/.config/${SLUG}"
+CONFIG_FILE="$CONFIG_DIR/config"
+
+APP_EXE="$PREFIX/$INSTALL_DIR/${APP_NAME}.exe"   # derived, same every run
+
+# Passed-in installer path (optional), and a scratch dir cleaned on exit.
+INSTALLER_ARG="${1:-}"
+INSTALLER=""
+WORK=""
+
+# ---------------------------------------------------------------------------
+# User-configurable settings (defaults; overwritten by config + prompts)
+# ---------------------------------------------------------------------------
+GPU_BACKEND="gl"          # gl | vulkan | disable-gpu
+DPI=""                    # blank => detect on first configure (never silently 163)
+POWER_PROFILE="performance"   # performance | balanced | leave-alone
+SYNC="auto"               # auto | on | off  (ntsync/fsync/esync)
+INSTALLER_PATH=""         # last installer used (remembered, informational)
+
+# Detection results filled in by detect_gpu / detect_scale.
+GPU_NAME=""
+GPU_VENDOR="unknown"
+DETECTED_SCALE=""
+DETECTED_METHOD=""
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -36,121 +65,400 @@ say()  { printf '\033[1;36m::\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!!\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31mxx\033[0m %s\n' "$*" >&2; exit 1; }
 
+cleanup() { [ -n "${WORK:-}" ] && rm -rf "$WORK"; }
+trap cleanup EXIT
+
+# Ask a free-text question with a default. Prompt goes to stderr (via read -p),
+# the answer to stdout, so this is safe to use in "x=$(prompt_default ...)".
+prompt_default() {
+    local q="$1" d="$2" ans=""
+    read -r -p "$q [$d]: " ans || true
+    printf '%s' "${ans:-$d}"
+}
+
+# ---------------------------------------------------------------------------
+# Preconditions
+# ---------------------------------------------------------------------------
 [ "$(id -u)" -ne 0 ] || die "Run this as your normal user, not root (it uses sudo only where needed)."
 command -v dnf >/dev/null 2>&1 || die "This script targets Fedora (dnf not found)."
 
-# ---------------------------------------------------------------------------
-# 1. Locate the installer .exe
-# ---------------------------------------------------------------------------
-INSTALLER="${1:-}"
-if [ -z "$INSTALLER" ]; then
-    INSTALLER="$(ls -1t "$HOME"/Downloads/xTool-Studio*.exe 2>/dev/null | head -1 || true)"
-fi
-[ -n "$INSTALLER" ] && [ -f "$INSTALLER" ] || die \
-"Could not find an xTool Studio installer.
-   Download it from https://www.xtool.com/pages/software (or s.xtool.com/software),
-   then re-run:   ./install.sh ~/Downloads/xTool-Studio-x64-VERSION.exe"
-INSTALLER="$(readlink -f "$INSTALLER")"
-say "Using installer: $INSTALLER"
-
-# ---------------------------------------------------------------------------
-# 2. Dependencies
-# ---------------------------------------------------------------------------
-say "Installing dependencies (you may be prompted for your password)…"
-sudo dnf install -y wine winetricks 7zip icoutils ImageMagick \
-    >/dev/null || die "Dependency install failed."
-
-command -v wine    >/dev/null || die "wine not available after install."
-command -v 7z      >/dev/null || die "7z not available after install."
-command -v wrestool >/dev/null || die "wrestool (icoutils) not available after install."
-
-# ---------------------------------------------------------------------------
-# 3. Build a clean Wine prefix (Windows 10, 64-bit, DPI)
-# ---------------------------------------------------------------------------
-export WINEPREFIX="$PREFIX"
-export WINEARCH=win64
-export WINEDEBUG=-all
-
-if [ -f "$PREFIX/system.reg" ]; then
-    say "Wine prefix already exists at $PREFIX (reusing)."
-else
-    say "Creating Wine prefix at $PREFIX …"
-    mkdir -p "$PREFIX"
-    wineboot -i >/dev/null 2>&1 || die "wineboot failed to initialise the prefix."
-    say "Setting Windows version to 10 …"
-    winetricks -q win10 >/dev/null 2>&1 || warn "winetricks win10 reported an issue; continuing."
+# Make the menu work even under "curl ... | bash": in that case stdin is the
+# script itself, so reopen the controlling terminal for interactive reads.
+if [ ! -t 0 ] && [ -r /dev/tty ]; then
+    exec </dev/tty
 fi
 
-say "Setting DPI to $DPI …"
-wine reg add "HKCU\\Control Panel\\Desktop" /v LogPixels /t REG_DWORD /d "$DPI" /f \
-    >/dev/null 2>&1 || warn "Could not set DPI; you can adjust it later."
-wineserver -w 2>/dev/null || true
+# ---------------------------------------------------------------------------
+# Config persistence
+# ---------------------------------------------------------------------------
+load_config() {
+    # Defaults are already set above; the config file overrides them.
+    if [ -f "$CONFIG_FILE" ]; then
+        # shellcheck disable=SC1090  # our own generated, trusted file
+        . "$CONFIG_FILE"
+    fi
+}
+
+save_config() {
+    mkdir -p "$CONFIG_DIR"
+    cat > "$CONFIG_FILE" <<EOF
+# xTool Studio installer settings - auto-generated, re-run install.sh to change.
+GPU_BACKEND="$GPU_BACKEND"
+DPI="$DPI"
+POWER_PROFILE="$POWER_PROFILE"
+SYNC="$SYNC"
+INSTALLER_PATH="$INSTALLER_PATH"
+EOF
+    say "Settings saved to $CONFIG_FILE"
+}
 
 # ---------------------------------------------------------------------------
-# 4. Extract the app straight out of the installer
+# Detection: GPU
 # ---------------------------------------------------------------------------
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
-say "Extracting application payload from installer…"
-# Outer NSIS archive holds the inner electron-builder app archive.
-7z x "$INSTALLER" '$PLUGINSDIR/app-64.7z' -o"$WORK/outer" >/dev/null \
-    || die "Could not extract app-64.7z from the installer (unexpected installer layout)."
-INNER="$(find "$WORK/outer" -iname 'app-64.7z' | head -1)"
-[ -n "$INNER" ] || die "Inner app archive not found inside installer."
-7z x "$INNER" -o"$WORK/app" >/dev/null || die "Could not unpack the application archive."
-[ -f "$WORK/app/${APP_NAME}.exe" ] || die "Extracted payload is missing ${APP_NAME}.exe."
+detect_gpu() {
+    GPU_NAME=""
+    GPU_VENDOR="unknown"
+    if command -v lspci >/dev/null 2>&1; then
+        GPU_NAME=$(lspci 2>/dev/null | grep -Ei 'vga|3d controller|display' \
+            | sed -E 's/^[0-9a-f:.]+ [^:]+: //' | head -1 || true)
+    fi
+    if [ -z "$GPU_NAME" ] && command -v glxinfo >/dev/null 2>&1; then
+        GPU_NAME=$(glxinfo 2>/dev/null | grep -i 'OpenGL renderer' \
+            | cut -d: -f2- | sed 's/^ *//' | head -1 || true)
+    fi
+    case "${GPU_NAME,,}" in
+        *nvidia*|*geforce*|*quadro*) GPU_VENDOR="nvidia" ;;
+        *amd*|*radeon*|*ati*)        GPU_VENDOR="amd" ;;
+        *intel*)                     GPU_VENDOR="intel" ;;
+        *)                           GPU_VENDOR="unknown" ;;
+    esac
+}
 
 # ---------------------------------------------------------------------------
-# 5. Install the app into the prefix
+# Detection: display scale -> DPI
+#
+# We compute DPI as round(96 * scale). The scale comes from the desktop:
+#   KDE   : kscreen-doctor, then kdeglobals, then the kscreen config cache.
+#   GNOME : gsettings text-scaling-factor combined with the per-monitor
+#           (Mutter) scale from ~/.config/monitors.xml.
+# If nothing usable is found we leave DETECTED_SCALE empty and the caller
+# falls back to a NEUTRAL 96 (100%, no scaling) - never a silent 163.
 # ---------------------------------------------------------------------------
-DEST="$PREFIX/$INSTALL_DIR"
-say "Installing app to: $DEST"
-mkdir -p "$DEST"
-cp -rf "$WORK/app/." "$DEST/"
-APP_EXE="$DEST/${APP_NAME}.exe"
+detect_scale() {
+    DETECTED_SCALE=""
+    DETECTED_METHOD=""
+    local de="${XDG_CURRENT_DESKTOP:-}"
+    local s=""
+
+    case "${de,,}" in
+        *kde*|*plasma*)
+            if command -v kscreen-doctor >/dev/null 2>&1; then
+                s=$(kscreen-doctor -o 2>/dev/null | grep -iE 'scale' \
+                    | grep -oE '[0-9]+(\.[0-9]+)?' | head -1 || true)
+                if [ -n "$s" ]; then
+                    DETECTED_SCALE="$s"; DETECTED_METHOD="kscreen-doctor"; return
+                fi
+            fi
+            if [ -f "$HOME/.config/kdeglobals" ]; then
+                s=$(grep -E '^[[:space:]]*ScaleFactor[[:space:]]*=' "$HOME/.config/kdeglobals" 2>/dev/null \
+                    | head -1 | grep -oE '[0-9]+(\.[0-9]+)?' | head -1 || true)
+                if [ -n "$s" ]; then
+                    DETECTED_SCALE="$s"; DETECTED_METHOD="kdeglobals"; return
+                fi
+            fi
+            local kf=""
+            kf=$(find "$HOME/.config/kscreen" -type f 2>/dev/null | head -1 || true)
+            if [ -n "$kf" ]; then
+                s=$(grep -oE '"scale":[0-9]+(\.[0-9]+)?' "$kf" 2>/dev/null \
+                    | head -1 | grep -oE '[0-9]+(\.[0-9]+)?' || true)
+                if [ -n "$s" ]; then
+                    DETECTED_SCALE="$s"; DETECTED_METHOD="kscreen config"; return
+                fi
+            fi
+            ;;
+        *gnome*|*unity*|*ubuntu*|*cinnamon*)
+            # GNOME-family: only trust this path if gsettings is present.
+            if command -v gsettings >/dev/null 2>&1; then
+                local text="1" isf="" base=""
+                text=$(gsettings get org.gnome.desktop.interface text-scaling-factor 2>/dev/null \
+                    | grep -oE '[0-9]+(\.[0-9]+)?' | head -1 || true)
+                [ -n "$text" ] || text="1"
+                isf=$(gsettings get org.gnome.desktop.interface scaling-factor 2>/dev/null \
+                    | grep -oE '[0-9]+' | head -1 || true)
+                # Fractional per-monitor scale is stored by Mutter in monitors.xml.
+                if [ -f "$HOME/.config/monitors.xml" ]; then
+                    base=$(grep -oE '<scale>[0-9]+(\.[0-9]+)?</scale>' "$HOME/.config/monitors.xml" 2>/dev/null \
+                        | head -1 | grep -oE '[0-9]+(\.[0-9]+)?' || true)
+                fi
+                if [ -z "$base" ]; then
+                    if [ -n "$isf" ] && [ "$isf" -ge 1 ] 2>/dev/null; then
+                        base="$isf"
+                    else
+                        base="1"
+                    fi
+                fi
+                s=$(awk -v b="$base" -v t="$text" 'BEGIN{printf "%.4f", b*t}')
+                if [ -n "$s" ]; then
+                    DETECTED_SCALE="$s"; DETECTED_METHOD="gsettings/monitors.xml"; return
+                fi
+            fi
+            ;;
+    esac
+    # Anything else: leave DETECTED_SCALE empty -> neutral fallback in caller.
+}
 
 # ---------------------------------------------------------------------------
-# 6. Extract the application icon
+# Interactive choosers. Each prints its menu to stderr and the chosen value to
+# stdout, so callers can do  VAR="$(choose_x "$VAR")".
 # ---------------------------------------------------------------------------
-say "Extracting icon…"
-mkdir -p "$ICON_DIR"
-if wrestool -x -t 14 -o "$WORK/icons" "$INSTALLER" >/dev/null 2>&1 \
-   && ICO="$(ls -1 "$WORK"/icons/*.ico 2>/dev/null | head -1)" && [ -n "$ICO" ] \
-   && magick "$ICO" "$WORK/icons/out.png" >/dev/null 2>&1; then
-    BIG="$(ls -S "$WORK"/icons/out*.png 2>/dev/null | head -1)"
-    [ -n "$BIG" ] && cp "$BIG" "$ICON_PATH"
-fi
-[ -f "$ICON_PATH" ] || warn "Icon extraction failed; the launcher will use a generic icon."
+choose_gpu() {
+    local cur="$1" def=1 ans=""
+    {
+        echo "GPU rendering backend:"
+        echo "  1) gl          - stable, hardware accelerated (default)"
+        echo "  2) vulkan      - faster, but may show visual glitches"
+        echo "  3) disable-gpu - software rendering, slowest but safest"
+    } >&2
+    case "$cur" in gl) def=1 ;; vulkan) def=2 ;; disable-gpu) def=3 ;; esac
+    read -r -p "Choose [1-3] ($def): " ans || true
+    ans="${ans:-$def}"
+    case "$ans" in 1) echo gl ;; 2) echo vulkan ;; 3) echo disable-gpu ;; *) echo "$cur" ;; esac
+}
+
+choose_power() {
+    local cur="$1" def=1 ans=""
+    {
+        echo "Power profile to set on launch:"
+        echo "  1) performance (default)"
+        echo "  2) balanced"
+        echo "  3) leave-alone"
+    } >&2
+    case "$cur" in performance) def=1 ;; balanced) def=2 ;; leave-alone) def=3 ;; esac
+    read -r -p "Choose [1-3] ($def): " ans || true
+    ans="${ans:-$def}"
+    case "$ans" in 1) echo performance ;; 2) echo balanced ;; 3) echo leave-alone ;; *) echo "$cur" ;; esac
+}
+
+choose_sync() {
+    local cur="$1" def=1 ans="" detected="off"
+    [ -e /dev/ntsync ] && detected="on"
+    {
+        echo "Thread-sync accelerators (ntsync/fsync/esync):"
+        echo "  /dev/ntsync present: $detected"
+        echo "  1) auto - enable them when /dev/ntsync exists (default)"
+        echo "  2) on   - force enable"
+        echo "  3) off  - disable"
+    } >&2
+    case "$cur" in auto) def=1 ;; on) def=2 ;; off) def=3 ;; esac
+    read -r -p "Choose [1-3] ($def): " ans || true
+    ans="${ans:-$def}"
+    case "$ans" in 1) echo auto ;; 2) echo on ;; 3) echo off ;; *) echo "$cur" ;; esac
+}
+
+# Resolve the sync setting to a yes/no for launcher generation.
+sync_enabled() {
+    case "$SYNC" in
+        on)  return 0 ;;
+        off) return 1 ;;
+        *)   [ -e /dev/ntsync ] ;;   # auto
+    esac
+}
 
 # ---------------------------------------------------------------------------
-# 7. Write the launcher script
+# DPI configuration (detect, suggest, let the user accept or override)
 # ---------------------------------------------------------------------------
-say "Writing launcher: $LAUNCHER"
-mkdir -p "$BIN_DIR"
-cat > "$LAUNCHER" <<EOF
+configure_dpi() {
+    local current="$DPI" suggested="" def="" ans=""
+    detect_scale
+    if [ -n "$DETECTED_SCALE" ]; then
+        local pct dpi
+        pct=$(awk -v s="$DETECTED_SCALE" 'BEGIN{printf "%.0f", s*100}')
+        dpi=$(awk -v s="$DETECTED_SCALE" 'BEGIN{printf "%.0f", s*96}')
+        suggested="$dpi"
+        say "Detected display scale ${pct}% -> suggested DPI ${dpi} (via ${DETECTED_METHOD})"
+    else
+        warn "Could not detect your display scale; falling back to DPI 96 (100%, no scaling)."
+        warn "If you are on a HiDPI screen, set this manually as 96 x your_scale (e.g. 170% -> 163)."
+        suggested="96"
+    fi
+    # Pre-fill with the previously saved value if there is one, else the suggestion.
+    def="${current:-$suggested}"
+    ans="$(prompt_default "Enter DPI (96 = 100%)" "$def")"
+    if ! [[ "$ans" =~ ^[0-9]+$ ]]; then
+        warn "Not a whole number; keeping $def."
+        ans="$def"
+    fi
+    DPI="$ans"
+}
+
+# ---------------------------------------------------------------------------
+# Settings wizard (GPU, DPI, power, sync) - pre-filled from current values.
+# ---------------------------------------------------------------------------
+configure_settings() {
+    detect_gpu
+    say "Detected GPU: ${GPU_NAME:-unknown} (vendor: ${GPU_VENDOR})"
+    if [ "$GPU_VENDOR" = "nvidia" ]; then
+        warn "Nvidia detected: ANGLE-under-Wine is fussier on Nvidia; 'gl' is the safest choice."
+    fi
+    # NOTE: we deliberately do NOT auto-pick gl vs vulkan. Whether the canvas
+    # renders *correctly* (no glitches) cannot be probed from software - it
+    # depends on the exact GPU/driver/ANGLE/DXVK interaction and only shows up
+    # visually. So we detect the GPU for information, default to the safe 'gl',
+    # and let you eyeball the result and switch. "Reconfigure settings only"
+    # can relaunch the app so you can compare backends side by side.
+    GPU_BACKEND="$(choose_gpu "$GPU_BACKEND")"
+
+    configure_dpi
+
+    POWER_PROFILE="$(choose_power "$POWER_PROFILE")"
+    SYNC="$(choose_sync "$SYNC")"
+
+    save_config
+}
+
+# ---------------------------------------------------------------------------
+# Dependencies
+# ---------------------------------------------------------------------------
+ensure_deps() {
+    say "Installing dependencies (you may be prompted for your password)..."
+    sudo dnf install -y wine winetricks 7zip icoutils ImageMagick \
+        >/dev/null || die "Dependency install failed."
+    command -v wine     >/dev/null || die "wine not available after install."
+    command -v 7z       >/dev/null || die "7z not available after install."
+    command -v wrestool >/dev/null || die "wrestool (icoutils) not available after install."
+}
+
+# ---------------------------------------------------------------------------
+# Build a clean Wine prefix (Windows 10, 64-bit).  [PROTECTED LOGIC]
+# wineboot + winetricks win10 are the hard-won working combination; untouched.
+# ---------------------------------------------------------------------------
+build_prefix() {
+    export WINEPREFIX="$PREFIX"
+    export WINEARCH=win64
+    export WINEDEBUG=-all
+
+    if [ -f "$PREFIX/system.reg" ]; then
+        say "Wine prefix already exists at $PREFIX (reusing)."
+    else
+        say "Creating Wine prefix at $PREFIX ..."
+        mkdir -p "$PREFIX"
+        wineboot -i >/dev/null 2>&1 || die "wineboot failed to initialise the prefix."
+        say "Setting Windows version to 10 ..."
+        winetricks -q win10 >/dev/null 2>&1 || warn "winetricks win10 reported an issue; continuing."
+    fi
+}
+
+# Apply the chosen DPI to the prefix registry (LogPixels). Cheap and idempotent;
+# safe to call on reconfigure as long as the prefix exists.
+apply_dpi() {
+    [ -f "$PREFIX/system.reg" ] || return 0
+    say "Applying DPI $DPI to the prefix ..."
+    WINEPREFIX="$PREFIX" WINEARCH=win64 WINEDEBUG=-all \
+        wine reg add "HKCU\\Control Panel\\Desktop" /v LogPixels /t REG_DWORD /d "$DPI" /f \
+        >/dev/null 2>&1 || warn "Could not set DPI; you can adjust it later."
+    WINEPREFIX="$PREFIX" wineserver -w 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
+# Extract the app straight out of the installer.  [PROTECTED LOGIC]
+# The outer NSIS archive holds the inner electron-builder app archive at the
+# literal path $PLUGINSDIR/app-64.7z (NOT a shell variable). Untouched.
+# ---------------------------------------------------------------------------
+extract_app() {
+    WORK="$(mktemp -d)"
+    say "Extracting application payload from installer..."
+    # shellcheck disable=SC2016  # $PLUGINSDIR is a literal path inside the archive
+    7z x "$INSTALLER" '$PLUGINSDIR/app-64.7z' -o"$WORK/outer" >/dev/null \
+        || die "Could not extract app-64.7z from the installer (unexpected installer layout)."
+    INNER="$(find "$WORK/outer" -iname 'app-64.7z' | head -1)"
+    [ -n "$INNER" ] || die "Inner app archive not found inside installer."
+    7z x "$INNER" -o"$WORK/app" >/dev/null || die "Could not unpack the application archive."
+    [ -f "$WORK/app/${APP_NAME}.exe" ] || die "Extracted payload is missing ${APP_NAME}.exe."
+
+    local dest="$PREFIX/$INSTALL_DIR"
+    say "Installing app to: $dest"
+    mkdir -p "$dest"
+    cp -rf "$WORK/app/." "$dest/"
+
+    extract_icon
+    rm -rf "$WORK"
+    WORK=""
+}
+
+# Pull the .ico out of the installer and convert the largest frame to PNG.
+extract_icon() {
+    say "Extracting icon..."
+    mkdir -p "$ICON_DIR"
+    if wrestool -x -t 14 -o "$WORK/icons" "$INSTALLER" >/dev/null 2>&1; then
+        local ico="" big=""
+        ico="$(find "$WORK/icons" -maxdepth 1 -iname '*.ico' 2>/dev/null | head -1)"
+        if [ -n "$ico" ] && magick "$ico" "$WORK/icons/out.png" >/dev/null 2>&1; then
+            # Pick the largest produced PNG (by file size).
+            big="$(find "$WORK/icons" -maxdepth 1 -iname 'out*.png' -printf '%s %p\n' 2>/dev/null \
+                | sort -rn | head -1 | cut -d' ' -f2-)"
+            [ -n "$big" ] && cp "$big" "$ICON_PATH"
+        fi
+    fi
+    [ -f "$ICON_PATH" ] || warn "Icon extraction failed; the launcher will use a generic icon."
+}
+
+# ---------------------------------------------------------------------------
+# Generate the launcher from the current settings.  [PROTECTED LOGIC INSIDE]
+# The Wine env vars and the stdout/stderr->file redirection (the EBADF fix)
+# are unchanged. Only the GPU flags, power line, and sync block are driven by
+# config, which is exactly what the configurator is for.
+# ---------------------------------------------------------------------------
+write_launcher() {
+    mkdir -p "$BIN_DIR"
+
+    local gpu_flags sync_block power_line
+    case "$GPU_BACKEND" in
+        gl)          gpu_flags='--use-angle=gl --ignore-gpu-blocklist --enable-gpu-rasterization' ;;
+        vulkan)      gpu_flags='--use-angle=vulkan --ignore-gpu-blocklist --enable-gpu-rasterization' ;;
+        disable-gpu) gpu_flags='--disable-gpu' ;;
+        *)           gpu_flags='--use-angle=gl --ignore-gpu-blocklist --enable-gpu-rasterization' ;;
+    esac
+
+    if sync_enabled; then
+        # Exact known-good trio from the original working launcher.
+        sync_block=$'export WINENTSYNC=1\nexport WINEFSYNC=1\nexport WINEESYNC=1'
+    else
+        sync_block='# thread-sync accelerators disabled (no /dev/ntsync, or your choice)'
+    fi
+
+    case "$POWER_PROFILE" in
+        performance) power_line='powerprofilesctl set performance 2>/dev/null || true' ;;
+        balanced)    power_line='powerprofilesctl set balanced 2>/dev/null || true' ;;
+        leave-alone) power_line='# power profile left unchanged' ;;
+        *)           power_line='powerprofilesctl set performance 2>/dev/null || true' ;;
+    esac
+
+    say "Writing launcher: $LAUNCHER"
+    cat > "$LAUNCHER" <<EOF
 #!/usr/bin/env bash
-# Launcher for ${APP_NAME} under Wine.
-# Runs system Wine directly with file-backed stdio (fixes the Electron EBADF
-# crash that occurs when stdout/stderr are pipes) plus performance flags.
+# Launcher for ${APP_NAME} under Wine. Auto-generated by install.sh.
+# Re-run install.sh -> "Reconfigure settings only" to regenerate this file.
+#
+# EBADF fix: Electron/Node crashes when Wine hands it pipe-type stdout/stderr,
+# so we redirect both to real files below. Node then builds plain file writers
+# instead of sockets. Do not remove the redirection.
 export WINEPREFIX="$PREFIX"
 export WINEARCH=win64
-export WINENTSYNC=1
-export WINEFSYNC=1
-export WINEESYNC=1
+$sync_block
 export WINEDEBUG=-all
-powerprofilesctl set performance 2>/dev/null || true
+$power_line
 exec /usr/bin/wine "$APP_EXE" \\
-    --use-angle=${ANGLE_BACKEND} --ignore-gpu-blocklist --enable-gpu-rasterization \\
+    $gpu_flags \\
     >/tmp/${SLUG}-out.log 2>/tmp/${SLUG}-err.log
 EOF
-chmod +x "$LAUNCHER"
+    chmod +x "$LAUNCHER"
+}
 
-# ---------------------------------------------------------------------------
-# 8. Write the desktop entry
-# ---------------------------------------------------------------------------
-say "Writing desktop entry: $DESKTOP_FILE"
-mkdir -p "$(dirname "$DESKTOP_FILE")"
-cat > "$DESKTOP_FILE" <<EOF
+# Generate the desktop entry from the current settings.
+write_desktop() {
+    say "Writing desktop entry: $DESKTOP_FILE"
+    mkdir -p "$(dirname "$DESKTOP_FILE")"
+    cat > "$DESKTOP_FILE" <<EOF
 [Desktop Entry]
 Name=${APP_NAME}
 Comment=xTool laser software (Wine)
@@ -160,21 +468,165 @@ Terminal=false
 Type=Application
 Categories=Graphics;
 EOF
+}
+
+refresh_caches() {
+    gtk-update-icon-cache "$HOME/.local/share/icons/hicolor" >/dev/null 2>&1 || true
+    update-desktop-database "$HOME/.local/share/applications" >/dev/null 2>&1 || true
+    kbuildsycoca6 >/dev/null 2>&1 || true
+}
+
+# Offer to launch so the user can eyeball rendering and compare GPU backends.
+offer_relaunch() {
+    [ -x "$LAUNCHER" ] || return 0
+    [ -f "$APP_EXE" ] || return 0
+    local ans
+    ans="$(prompt_default "Launch now to eyeball the rendering? (yes/no)" "no")"
+    if [ "$ans" = "yes" ]; then
+        say "Launching... close it, re-run this script, and switch the backend to compare."
+        "$LAUNCHER" >/dev/null 2>&1 &
+    fi
+}
 
 # ---------------------------------------------------------------------------
-# 9. Refresh desktop / icon caches
+# Locate an installer .exe (explicit path wins, else newest in ~/Downloads).
+# Sets the global INSTALLER. Returns non-zero if nothing is found.
 # ---------------------------------------------------------------------------
-gtk-update-icon-cache "$HOME/.local/share/icons/hicolor" >/dev/null 2>&1 || true
-update-desktop-database "$HOME/.local/share/applications" >/dev/null 2>&1 || true
-kbuildsycoca6 >/dev/null 2>&1 || true
+locate_installer() {
+    local given="${1:-}" found=""
+    if [ -n "$given" ] && [ -f "$given" ]; then
+        found="$given"
+    else
+        found=$(find "$HOME/Downloads" -maxdepth 1 -iname 'xTool-Studio*.exe' -printf '%T@ %p\n' 2>/dev/null \
+            | sort -rn | head -1 | cut -d' ' -f2- || true)
+    fi
+    if [ -z "$found" ] || [ ! -f "$found" ]; then
+        return 1
+    fi
+    INSTALLER="$(readlink -f "$found")"
+    return 0
+}
 
-say "Done!"
-echo
-echo "  Launch '${APP_NAME}' from your application menu, or run: $LAUNCHER"
-echo "  Logs:        /tmp/${SLUG}-out.log  and  /tmp/${SLUG}-err.log"
-echo "  Wine prefix: $PREFIX"
-echo
-echo "  Notes:"
-echo "   - First run: set region/login, then connect the F2 over Wi-Fi."
-echo "   - If the editor renders glitchy, edit $LAUNCHER and keep --use-angle=gl."
-echo "   - To uninstall: rm -rf \"$PREFIX\" \"$LAUNCHER\" \"$DESKTOP_FILE\" \"$ICON_PATH\""
+final_notes() {
+    say "Done!"
+    echo
+    echo "  Launch '${APP_NAME}' from your application menu, or run: $LAUNCHER"
+    echo "  Logs:        /tmp/${SLUG}-out.log  and  /tmp/${SLUG}-err.log"
+    echo "  Wine prefix: $PREFIX"
+    echo "  Settings:    $CONFIG_FILE"
+    echo
+    echo "  Notes:"
+    echo "   - First run: set region/login, then connect the F2 over Wi-Fi."
+    echo "   - Re-run this script any time to reconfigure GPU/DPI/power without reinstalling."
+    echo "   - To uninstall, re-run and pick 'Uninstall'."
+}
+
+# ---------------------------------------------------------------------------
+# Menu actions
+# ---------------------------------------------------------------------------
+do_full_install() {
+    say "Full install / repair."
+    configure_settings
+    if ! locate_installer "$INSTALLER_ARG"; then
+        die "Could not find an xTool Studio installer.
+   Download it from https://www.xtool.com/pages/software, put it in ~/Downloads,
+   then re-run:   ./install.sh ~/Downloads/xTool-Studio-x64-VERSION.exe"
+    fi
+    say "Using installer: $INSTALLER"
+    INSTALLER_PATH="$INSTALLER"
+
+    ensure_deps
+    build_prefix
+    apply_dpi
+    extract_app
+    write_launcher
+    write_desktop
+    refresh_caches
+    save_config
+    final_notes
+    offer_relaunch
+}
+
+do_reconfigure() {
+    say "Reconfigure settings only (no reinstall, no re-extract)."
+    if [ ! -f "$PREFIX/system.reg" ]; then
+        warn "No Wine prefix yet at $PREFIX. Settings will be saved and the launcher"
+        warn "written, but you will still need a full install before the app can run."
+    fi
+    configure_settings
+    write_launcher
+    write_desktop
+    apply_dpi          # cheap registry tweak; only runs if the prefix exists
+    refresh_caches
+    say "Settings reapplied."
+    offer_relaunch
+}
+
+do_update() {
+    say "Update app (re-extract from a newer installer into the existing prefix)."
+    [ -f "$PREFIX/system.reg" ] || die "No existing prefix at $PREFIX. Run a full install first."
+    local p
+    p="$(prompt_default "Installer path (blank = newest in ~/Downloads)" "")"
+    if [ -n "$p" ]; then
+        locate_installer "$p" || die "Installer not found: $p"
+    else
+        locate_installer || die "No xTool-Studio*.exe found in ~/Downloads."
+    fi
+    say "Updating app from: $INSTALLER"
+    INSTALLER_PATH="$INSTALLER"
+    extract_app        # settings, launcher and desktop entry are left untouched
+    refresh_caches
+    save_config
+    say "App updated. Your settings were kept."
+}
+
+do_uninstall() {
+    say "Uninstall: removes the app, prefix, launcher, desktop entry and icon."
+    local ans
+    ans="$(prompt_default "Type 'yes' to confirm" "no")"
+    [ "$ans" = "yes" ] || { say "Aborted."; return; }
+    rm -rf "$SHARE_DIR" "$LAUNCHER" "$DESKTOP_FILE" "$ICON_PATH"
+    local rc
+    rc="$(prompt_default "Also remove saved settings ($CONFIG_FILE)? (yes/no)" "no")"
+    [ "$rc" = "yes" ] && rm -f "$CONFIG_FILE"
+    refresh_caches
+    say "Uninstalled."
+}
+
+# ---------------------------------------------------------------------------
+# Menu
+# ---------------------------------------------------------------------------
+show_menu() {
+    echo
+    say "xTool Studio on Fedora - installer and configurator"
+    if [ -f "$CONFIG_FILE" ]; then
+        say "Saved settings: backend=$GPU_BACKEND dpi=${DPI:-unset} power=$POWER_PROFILE sync=$SYNC"
+    else
+        say "No saved settings yet (first run)."
+    fi
+    echo
+
+    local PS3="Select an option (number): "
+    local opt
+    select opt in \
+        "Full install / repair" \
+        "Reconfigure settings only" \
+        "Update app (re-extract from newer installer)" \
+        "Uninstall" \
+        "Quit"; do
+        case "$opt" in
+            "Full install / repair")                        do_full_install; break ;;
+            "Reconfigure settings only")                    do_reconfigure;  break ;;
+            "Update app (re-extract from newer installer)")  do_update;       break ;;
+            "Uninstall")                                    do_uninstall;    break ;;
+            "Quit")                                         say "Bye.";      break ;;
+            *)                                              warn "Invalid choice; enter a number 1-5." ;;
+        esac
+    done
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+load_config
+show_menu

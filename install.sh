@@ -391,11 +391,15 @@ apply_window_fix() {
     apply_kwin_fill_rule
 }
 
-# KDE only. Add a KWin rule so the main xTool window fills the work area as a
-# normal, non-maximised, borderless window (no maximise = no white border). The
-# rule is scoped to Normal windows so dialogs (file pickers) are untouched. The
-# fill size is the work area in *logical* pixels (KWin rules use logical units),
-# i.e. physical work area / display scale. It pins the window to fill the screen.
+# KDE only. Add a KWin rule so the main xTool window OPENS filling the work area
+# as a normal, non-maximised, borderless window, and stays that way unless you
+# resize it. Maximising is what paints the app's ~5px white maximise-padding
+# border, so the rule blocks the maximised state; filling the screen on open
+# gives the same look without it. Size/position use "apply initially" (not force)
+# so the window remains freely resizable and movable - it is not pinned.
+# The rule is scoped to Normal windows so dialogs (file pickers) are untouched.
+# Fill size is the work area in *logical* pixels (KWin rules use logical units),
+# i.e. physical work area / display scale.
 apply_kwin_fill_rule() {
     case "${XDG_CURRENT_DESKTOP:-}" in *KDE*|*kde*|*Plasma*|*plasma*) ;; *) return 0 ;; esac
     command -v kwriteconfig6 >/dev/null 2>&1 || return 0
@@ -437,10 +441,13 @@ apply_kwin_fill_rule() {
     kwriteconfig6 --file "$F" --group "$g" --key maximizehorizrule 2
     kwriteconfig6 --file "$F" --group "$g" --key maximizevert --type bool false
     kwriteconfig6 --file "$F" --group "$g" --key maximizevertrule 2
+    # position/size use rule 3 (apply initially) so the window opens filled but
+    # stays resizable and movable; maximise stays force-blocked (rule 2) so the
+    # white maximise border never appears.
     kwriteconfig6 --file "$F" --group "$g" --key position "0,0"
-    kwriteconfig6 --file "$F" --group "$g" --key positionrule 2
+    kwriteconfig6 --file "$F" --group "$g" --key positionrule 3
     kwriteconfig6 --file "$F" --group "$g" --key size "${lw},${lh}"
-    kwriteconfig6 --file "$F" --group "$g" --key sizerule 2
+    kwriteconfig6 --file "$F" --group "$g" --key sizerule 3
     gdbus call --session --dest org.kde.KWin --object-path /KWin \
         --method org.kde.KWin.reconfigure >/dev/null 2>&1 || true
     say "Applied KDE window rule: fills the screen, no maximise border."

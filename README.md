@@ -161,13 +161,14 @@ and when you choose **Reconfigure settings only**):
 
 * `Decorated=N` in the Wine prefix, so the window manager never adds a second
   titlebar over the app's own. This works on any desktop.
-* On **KDE**, a KWin rule that makes the main window fill the work area as a
-  normal (non-maximised) window. The app's maximised state otherwise shows a
-  few-pixel white border (its own maximise padding), so filling the screen
-  without maximising avoids it. The rule is scoped to the main window, so dialogs
-  are unaffected. It effectively pins the window to fill the screen; to undo it,
-  re-run and choose **Uninstall**, or remove the `xtool-studio` rule in System
-  Settings, Window Management, Window Rules.
+* On **KDE**, a KWin rule that makes the main window open filling the work area
+  as a normal (non-maximised) window. The app's maximised state otherwise shows a
+  few-pixel white border (its own maximise padding), so the rule blocks
+  maximising and fills the screen on open instead. The window stays freely
+  resizable and movable (it is not pinned); only maximising is disabled. The rule
+  is scoped to the main window, so dialogs are unaffected. To remove it, re-run
+  and choose **Uninstall**, or delete the `xtool-studio` rule in System Settings,
+  Window Management, Window Rules.
 
 If you ever see a stray bar or border, fully close and relaunch the app.
 

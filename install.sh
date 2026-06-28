@@ -14,7 +14,7 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# Config — tweak these if you like
+# Config - tweak these if you like
 # ---------------------------------------------------------------------------
 APP_NAME="xTool Studio"
 SLUG="xtool-studio"

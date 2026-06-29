@@ -5,8 +5,7 @@ through system Wine. The first run installs everything; later runs let you
 change settings, update the app, or uninstall, without rebuilding anything you
 do not have to.
 
-Tested on Fedora 44 (KDE Plasma) with an AMD Radeon 890M and an xTool F2
-connected over Wi-Fi.
+Tested on Fedora 44 (KDE Plasma).
 
 ## Before you start
 
@@ -74,7 +73,7 @@ to compare. Nvidia cards are pickier, so `gl` is strongly recommended there.
 ### DPI (display scaling)
 
 The app can look tiny on a high-resolution screen. The installer detects your
-desktop scale and suggests a matching DPI, for example "170% gives DPI 163". You
+desktop scale and suggests a matching DPI, for example "150% gives DPI 144". You
 can accept it or type your own value. If it cannot detect your scale, it uses 96
 (100%) and asks you to set it.
 
@@ -89,10 +88,10 @@ preference, so it is left exactly as you set it.
 ## First run
 
 1. Choose your region and sign in or create an account.
-2. Connect your F2. It needs a one-time USB connection on any computer (such as
-   a Windows PC) to save its Wi-Fi credentials. After that it joins your network
-   and Studio finds it over Wi-Fi, with no USB needed on Linux.
-3. Make sure your computer and the F2 are on the same network.
+2. Connect your engraver. It needs a one-time USB connection on any computer
+   (such as a Windows PC) to save its Wi-Fi credentials. After that it joins your
+   network and Studio finds it over Wi-Fi, with no USB needed on Linux.
+3. Make sure your computer and the engraver are on the same network.
 
 On first launch the app may pop up **Install driver** boxes for RNDIS and CH340.
 You do not need to click Install. Tick **No more reminders** and close them. They
@@ -114,9 +113,10 @@ and it should appear in xTool Studio.
 ## Performance
 
 The editor works but can feel a little sluggish. This is the cost of running a
-Chromium-based app through Wine on an integrated GPU. The defaults already use
-the fastest stable setup. For heavy design work, you may prefer to edit on a
-Windows machine and use the Fedora install to send jobs.
+Chromium-based app through Wine, and it is more noticeable on lower-powered or
+integrated graphics. The defaults already use the fastest stable setup. For heavy
+design work, you may prefer to edit on a Windows machine and use the Fedora
+install to send jobs.
 
 ## Window titlebar
 

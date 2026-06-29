@@ -23,11 +23,7 @@ Put the installer in `~/Downloads`, then run:
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/bod09/xtool-studio-fedora/main/install.sh)"
 ```
 
-The installer is interactive (it shows a menu), so it is run with
-`bash -c "$(...)"` rather than `curl ... | bash`. The `bash -c` form keeps your
-terminal connected so the menu can read your answers; a plain `curl ... | bash`
-pipe cannot do that (the script would re-download itself to recover, or tell you
-to use the command above).
+This opens an interactive menu.
 
 Or clone and run it locally:
 
@@ -68,34 +64,19 @@ next time you run the script. Each has a sensible detected or default value.
 
 ### GPU rendering backend
 
-* `gl` (default): stable, hardware accelerated.
-* `vulkan`: faster, but can show visual glitches.
-* `disable-gpu`: software rendering, slowest but safest.
+* `gl` (default): stable and hardware accelerated.
+* `vulkan`: can be faster, but sometimes shows visual glitches.
+* `disable-gpu`: software rendering, slowest but most compatible.
 
-The script detects your GPU (via `lspci`, falling back to `glxinfo`) and shows
-it. It does **not** try to auto-pick `gl` versus `vulkan`. Whether the canvas
-renders correctly cannot be detected in software: it depends on the exact
-GPU, driver, ANGLE, and DXVK combination and only shows up visually. So you get
-the safe `gl` default and can switch and judge for yourself. After reconfiguring
-you can choose to relaunch the app to compare backends side by side.
-
-If an Nvidia GPU is detected, the script warns you that ANGLE under Wine is
-fussier on Nvidia and that `gl` is the safest choice.
+The installer detects your GPU and defaults to `gl`. You can switch and relaunch
+to compare. Nvidia cards are pickier, so `gl` is strongly recommended there.
 
 ### DPI (display scaling)
 
-Wine renders at 96 DPI by default, which looks tiny on a HiDPI screen. The
-script detects your desktop scale and suggests a DPI of `round(96 x scale)`:
-
-* On KDE it reads the scale from `kscreen-doctor`, then `~/.config/kdeglobals`,
-  then the kscreen config cache.
-* On GNOME it reads `text-scaling-factor` from `gsettings` combined with the
-  per-monitor (Mutter) scale from `~/.config/monitors.xml`.
-
-It shows what it found, for example `Detected display scale 170% -> suggested
-DPI 163`, and lets you accept it or enter your own value. If detection genuinely
-fails, it falls back to a neutral **96** (100%, no scaling) and tells you to set
-it manually. No DPI value is ever assumed silently.
+The app can look tiny on a high-resolution screen. The installer detects your
+desktop scale and suggests a matching DPI, for example "170% gives DPI 163". You
+can accept it or type your own value. If it cannot detect your scale, it uses 96
+(100%) and asks you to set it.
 
 The launcher does not change your system power profile. That is your own
 preference, so it is left exactly as you set it.
@@ -123,31 +104,12 @@ below.
 ## Connecting over USB
 
 Most people set the engraver up over Wi-Fi (see First run). If you do not have a
-second computer to do the Wi-Fi onboarding, you can connect over a USB cable
-instead.
+second computer for the Wi-Fi onboarding, you can connect over a USB cable.
 
-On first launch the app may offer to install two drivers, RNDIS and CH340:
-
-* RNDIS is USB networking. The Linux kernel handles it automatically, so the
-  USB connection uses the same network path as Wi-Fi with no setup needed.
-* CH340 is a USB-to-serial adapter. The driver the app offers to install does
-  nothing under Wine (there is no Windows driver model to install into, which is
-  why its box never clears). On Linux the kernel is the driver, so just tick
-  "No more reminders" on that box and close it.
-
-To prepare the serial connection on Linux, run the script and choose
-**Set up USB device connection (CH340 serial)**. It:
-
-* checks the `ch341` kernel module is present,
-* detects and offers to disable `brltty` if it is claiming CH340 devices (a
-  common cause of the port disappearing on some distros),
-* adds you to the `dialout` group so you can access the port (log out and back
-  in afterwards),
-* installs a udev rule that gives the adapter a stable `/dev/xtool` name with
-  the right permissions and keeps ModemManager away from it,
-* maps Wine `COM1` to that device.
-
-Then plug the engraver in over USB and it should be available in xTool Studio.
+Run the script and choose **Set up USB device connection (CH340 serial)**. It
+sets up the Linux side for you. You may be asked for your password, and you will
+need to log out and back in once afterwards. Then plug the engraver in over USB
+and it should appear in xTool Studio.
 
 ## Performance
 
@@ -158,16 +120,10 @@ Windows machine and use the Fedora install to send jobs.
 
 ## Window titlebar
 
-xTool Studio draws its own titlebar. The installer sets `Decorated=N` in the Wine
-prefix so the window manager never adds a second titlebar over the app's own,
-and so the app's titlebar is not clipped when maximised. This is applied
-automatically during a full install and when you choose **Reconfigure settings
-only**, and works on any desktop. If you ever see a stray bar, fully close and
-relaunch the app.
-
-When the window is maximised you may notice a thin white border around it (the
-app's own maximise padding). It is purely cosmetic and left alone; if it bothers
-you, run the window at a large size instead of maximised.
+The installer takes care of the window titlebar so you do not get a doubled or
+clipped one. When the window is maximised you may see a thin white border around
+it; that is harmless and cosmetic. If you would rather avoid it, use the window
+at a large size instead of fully maximised.
 
 ## Updating
 
@@ -183,7 +139,7 @@ Run the script and choose **Uninstall**, or remove everything by hand:
 rm -rf ~/.local/share/xtool-studio \
        ~/.local/bin/xtool-studio.sh \
        ~/.local/share/applications/xtool-studio.desktop \
-       ~/.local/share/icons/hicolor/256x256/apps/xtool-studio.png \
+       ~/.local/share/icons/hicolor/512x512/apps/xtool-studio.png \
        ~/.config/xtool-studio
 ```
 
